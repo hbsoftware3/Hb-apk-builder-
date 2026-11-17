@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HB APK Builder</title>
+<style>
+:root{--bg:#e9edf0;--card:#fff;--ink:#14212b;--mute:#5b6b78;--line:#cdd6dd;--accent:#1f4fd8;--ok:#1b7f4b;--bad:#b3261e}
+@media (prefers-color-scheme:dark){:root{--bg:#10171d;--card:#18222a;--ink:#e8eef2;--mute:#92a3b0;--line:#2b3943;--accent:#6c93ff;--ok:#4cc58a;--bad:#ff8a80}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:16px;max-width:560px;margin-inline:auto}
+h1{font-size:1.6rem;margin:8px 0 2px;letter-spacing:-.01em}
+.sub{color:var(--mute);margin:0 0 18px}
+section{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:14px}
+h2{font-size:1rem;margin:0 0 10px}
+label{display:block;font-size:.88rem;color:var(--mute);margin:10px 0 4px}
+input[type=text],input[type=password],textarea{width:100%;padding:11px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--ink);font:inherit}
+input:focus,textarea:focus,button:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.file{border:1.5px dashed var(--line);border-radius:8px;padding:14px;text-align:center;color:var(--mute);cursor:pointer}
+.file.has{border-style:solid;color:var(--ink)}
+button.go{width:100%;margin-top:14px;padding:14px;font:inherit;font-weight:600;color:#fff;background:var(--accent);border:0;border-radius:8px}
+button.go:disabled{opacity:.5}
+summary{cursor:pointer;font-weight:600}
+.hint{font-size:.85rem;color:var(--mute);margin:8px 0 0}
+ol.steps{list-style:none;padding:0;margin:0}
+ol.steps li{padding:8px 0 8px 28px;position:relative;border-bottom:1px solid var(--line);color:var(--mute)}
+ol.steps li:last-child{border:0}
+ol.steps li::before{content:"";position:absolute;left:4px;top:13px;width:12px;height:12px;border-radius:50%;border:2px solid var(--line)}
+ol.steps li.run{color:var(--ink)}
+ol.steps li.run::before{border-color:var(--accent);border-top-color:transparent;animation:sp .8s linear infinite}
+ol.steps li.done{color:var(--ink)}
+ol.steps li.done::before{background:var(--ok);border-color:var(--ok)}
+ol.steps li.fail{color:var(--bad)}
+ol.steps li.fail::before{background:var(--bad);border-color:var(--bad)}
+@keyframes sp{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){ol.steps li.run::before{animation:none}}
+.msg{margin-top:12px;font-size:.92rem;word-break:break-word}
+.msg.bad{color:var(--bad)}
+.out a{display:block;margin-top:8px;color:var(--accent);word-break:break-all}
+code{font-size:.85rem;word-break:break-all}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<h1>HB APK Builder</h1>
+<p class="sub">Upload a project zip, get a signed APK and a ready update link.</p>
+
+<section>
+  <details id="setup">
+    <summary>Setup (once)</summary>
+    <label for="repo">GitHub repository (owner/name)</label>
+    <input id="repo" type="text" value="hbsoftware3/Custom-APK-Compiler" autocapitalize="none" autocomplete="off">
+    <label for="token">GitHub token</label>
+    <input id="token" type="password" autocomplete="off" placeholder="github_pat_...">
+    <p class="hint">Fine-grained token for this repository only, with Contents: read/write and Actions: read/write. It stays in this browser and is sent only to GitHub.</p>
+    <button class="go" id="save" type="button">Save setup</button>
+  </details>
+</section>
+
+<section>
+  <h2>New build or update</h2>
+  <label for="slug">App id</label>
+  <input id="slug" type="text" placeholder="my-app" autocapitalize="none" autocomplete="off">
+  <p class="hint">Small letters, numbers and dash. Use the same id again to publish an update of the same app.</p>
+  <label for="notes">Update notes (optional)</label>
+  <textarea id="notes" rows="2"></textarea>
+  <label>Project zip</label>
+  <div class="file" id="drop" role="button" tabindex="0">Tap to choose the zip</div>
+  <input id="zip" type="file" accept=".zip" hidden>
+  <button class="go" id="build" type="button">Build APK</button>
+</section>
+
+<section id="progress" hidden>
+  <h2>Progress</h2>
+  <ol class="steps" id="steps">
+    <li data-s="upload">Uploading the zip</li>
+    <li data-s="start">Starting the build</li>
+    <li data-s="build">Building and signing</li>
+    <li data-s="publish">Publishing the APK</li>
+  </ol>
+  <div class="msg" id="msg"></div>
+  <div class="out" id="out" hidden></div>
+</section>
+
+<script>
+const $ = id => document.getElementById(id);
+const ls = {
+  get: k => { try { return localStorage.getItem(k) || ""; } catch (e) { return ""; } },
+  set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} }
+};
+const WORKFLOW = "build-apk.yml";
+let busy = false;
+
+$("repo").value = ls.get("hb_repo") || $("repo").value;
+$("token").value = ls.get("hb_token");
+if (!ls.get("hb_token")) $("setup").open = true;
+
+$("save").onclick = () => {
+  ls.set("hb_repo", $("repo").value.trim());
+  ls.set("hb_token", $("token").value.trim());
+  $("setup").open = false;
+};
+
+const pick = () => $("zip").click();
+$("drop").onclick = pick;
+$("drop").onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } };
+$("zip").onchange = () => {
+  const f = $("zip").files[0];
+  $("drop").textContent = f ? f.name + " (" + (f.size / 1048576).toFixed(1) + " MB)" : "Tap to choose the zip";
+  $("drop").classList.toggle("has", !!f);
+};
+
+function step(name, state) {
+  const items = [...document.querySelectorAll("#steps li")];
+  const idx = items.findIndex(li => li.dataset.s === name);
+  items.forEach((li, i) => {
+    if (i < idx) li.className = "done";
+    else if (i === idx) li.className = state;
+    else li.className = "";
+  });
+}
+function say(t, bad) { $("msg").textContent = t; $("msg").className = "msg" + (bad ? " bad" : ""); }
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function gh(path, opts) {
+  const r = await fetch("https://api.github.com" + path, Object.assign({}, opts, {
+    headers: Object.assign({
+      "Accept": "application/vnd.github+json",
+      "Authorization": "Bearer " + ls.get("hb_token"),
+      "X-GitHub-Api-Version": "2022-11-28"
+    }, (opts && opts.headers) || {})
+  }));
+  if (r.status === 204) return {};
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { const e = new Error(j.message || ("GitHub error " + r.status)); e.status = r.status; throw e; }
+  return j;
+}
+
+function toBase64(file) {
+  return new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onload = () => res(String(fr.result).split(",")[1]);
+    fr.onerror = () => rej(new Error("Could not read the zip file."));
+    fr.readAsDataURL(file);
+  });
+}
+
+$("build").onclick = async () => {
+  if (busy) return;
+  const repo = ls.get("hb_repo"), token = ls.get("hb_token");
+  const slug = $("slug").value.trim();
+  const file = $("zip").files[0];
+  if (!repo || !token) { $("setup").open = true; return alert("Save your repository and token in Setup first."); }
+  if (!/^[a-z0-9-]{1,40}$/.test(slug)) return alert("App id: use small letters, numbers and dash only.");
+  if (!file) return alert("Choose the project zip first.");
+
+  busy = true; $("build").disabled = true;
+  $("progress").hidden = false; $("out").hidden = true; say("");
+  try {
+    step("upload", "run");
+    const info = await gh("/repos/" + repo);
+    const branch = info.default_branch;
+    const zipPath = "incoming/" + slug + ".zip";
+    let sha;
+    try { sha = (await gh("/repos/" + repo + "/contents/" + zipPath + "?ref=" + branch)).sha; } catch (e) { if (e.status !== 404) throw e; }
+    const body = { message: "Upload " + slug, content: await toBase64(file), branch: branch };
+    if (sha) body.sha = sha;
+    await gh("/repos/" + repo + "/contents/" + zipPath, { method: "PUT", body: JSON.stringify(body) });
+
+    step("start", "run");
+    const before = new Set(((await gh("/repos/" + repo + "/actions/workflows/" + WORKFLOW + "/runs?event=workflow_dispatch&per_page=10")).workflow_runs || []).map(r => r.id));
+    await gh("/repos/" + repo + "/actions/workflows/" + WORKFLOW + "/dispatches", {
+      method: "POST",
+      body: JSON.stringify({ ref: branch, inputs: { slug: slug, zip_path: zipPath, notes: $("notes").value.trim() } })
+    });
+    let run = null;
+    for (let i = 0; i < 30 && !run; i++) {
+      await sleep(3000);
+      const list = (await gh("/repos/" + repo + "/actions/workflows/" + WORKFLOW + "/runs?event=workflow_dispatch&per_page=10")).workflow_runs || [];
+      run = list.find(r => !before.has(r.id)) || null;
+    }
+    if (!run) throw new Error("The build did not start. Check that " + WORKFLOW + " exists in the repository.");
+
+    step("build", "run");
+    const t0 = Date.now();
+    while (run.status !== "completed") {
+      say("Building... " + Math.round((Date.now() - t0) / 1000) + " s. Keep this page open.");
+      await sleep(8000);
+      run = await gh("/repos/" + repo + "/actions/runs/" + run.id);
+    }
+    if (run.conclusion !== "success") {
+      step("build", "fail");
+      say("Build failed. Open the log to see the error.", true);
+      $("out").innerHTML = '<a href="' + run.html_url + '" target="_blank" rel="noopener">Open build log</a>';
+      $("out").hidden = false;
+      return;
+    }
+    step("publish", "done");
+    document.querySelectorAll("#steps li").forEach(li => li.className = "done");
+    say("Done. The APK is ready.");
+    const base = "https://github.com/" + repo + "/releases/download/app-" + slug + "/";
+    $("out").innerHTML =
+      '<a href="' + base + slug + '.apk">Download ' + slug + '.apk</a>' +
+      '<p class="hint">Update link (already set inside the app):</p><code>' + base + 'update-v1.json</code>';
+    $("out").hidden = false;
+  } catch (e) {
+    document.querySelectorAll("#steps li.run").forEach(li => li.className = "fail");
+    say(e.message, true);
+  } finally {
+    busy = false; $("build").disabled = false;
+  }
+};
+</script>
+</body>
+</html>
